@@ -118,56 +118,66 @@ def get_my_bookings():
     print(f"📖 GET_MY_BOOKINGS: User {user_id}")
     today = date.today()
 
-    all_bookings = (
-        Booking.query.join(AppointmentSlot, Booking.slot_id == AppointmentSlot.id)
-        .join(Business, Booking.business_id == Business.id)
-        .filter(Booking.user_id == user_id)
-        .order_by(AppointmentSlot.date.asc(), AppointmentSlot.start_time.asc())
-        .all()
-    )
-    
-    print(f"✅ FOUND {len(all_bookings)} bookings for user {user_id}")
+    try:
+        all_bookings = (
+            Booking.query.outerjoin(AppointmentSlot, Booking.slot_id == AppointmentSlot.id)
+            .outerjoin(Business, Booking.business_id == Business.id)
+            .filter(Booking.user_id == user_id)
+            .order_by(AppointmentSlot.date.asc(), AppointmentSlot.start_time.asc())
+            .all()
+        )
+        
+        print(f"✅ FOUND {len(all_bookings)} bookings for user {user_id}")
 
-    upcoming = []
-    history = []
-    for b in all_bookings:
-        slot = b.slot
-        business = b.business
-        payment_info = None
-        if b.payment:
-            payment_info = {
-                "id": b.payment.id,
-                "amount": b.payment.amount,
-                "refund_amount": b.payment.refund_amount,
-                "status": b.payment.status,
-                "payment_method": b.payment.payment_method,
+        upcoming = []
+        history = []
+        for b in all_bookings:
+            slot = getattr(b, "slot", None)
+            business = getattr(b, "business", None)
+            
+            payment_info = None
+            b_payment = getattr(b, "payment", None)
+            if b_payment:
+                payment_info = {
+                    "id": getattr(b_payment, "id", None),
+                    "amount": getattr(b_payment, "amount", 0.0),
+                    "refund_amount": getattr(b_payment, "refund_amount", 0.0),
+                    "status": str(getattr(b_payment, "status", "")),
+                    "payment_method": getattr(b_payment, "payment_method", None),
+                }
+
+            b_status = getattr(b, "status", "pending")
+            b_status_str = b_status.value.lower() if hasattr(b_status, 'value') else str(b_status).lower()
+
+            item = {
+                "id": getattr(b, "id", None),
+                "status": b_status_str,
+                "payment_status": str(getattr(b, "payment_status", "")),
+                "payment": payment_info,
+                "service": getattr(b, "service_name", None) or (getattr(business, "category", "") if business else ""),
+                "business": {
+                    "id": getattr(business, "id", None),
+                    "name": getattr(business, "name", "Unknown Business"),
+                    "address": getattr(business, "address", ""),
+                    "city": getattr(business, "city", ""),
+                } if business else None,
+                "date": slot.date.isoformat() if slot and getattr(slot, "date", None) else "",
+                "start_time": slot.start_time.strftime("%H:%M") if slot and getattr(slot, "start_time", None) else "",
+                "end_time": slot.end_time.strftime("%H:%M") if slot and getattr(slot, "end_time", None) else "",
+                "created_at": b.created_at.isoformat() if getattr(b, "created_at", None) else "",
             }
-        item = {
-            "id": b.id,
-            "status": b.status,
-            "payment_status": b.payment_status,
-            "payment": payment_info,
-            "service": b.service_name or business.category or "",
-            "business": {
-                "id": business.id,
-                "name": business.name,
-                "address": business.address,
-                "city": business.city,
-            },
-            "date": slot.date.isoformat(),
-            "start_time": slot.start_time.strftime("%H:%M"),
-            "end_time": slot.end_time.strftime("%H:%M"),
-            "created_at": b.created_at.isoformat(),
-        }
-        if slot.date >= today and b.status in (
-            BookingStatus.PENDING,
-            BookingStatus.CONFIRMED,
-        ):
-            upcoming.append(item)
-        else:
-            history.append(item)
 
-    return jsonify({"upcoming": upcoming, "history": history})
+            if slot and getattr(slot, "date", None) and slot.date >= today and b_status_str in ("pending", "confirmed"):
+                upcoming.append(item)
+            else:
+                history.append(item)
+
+        return jsonify({"upcoming": upcoming, "history": history})
+    except Exception as e:
+        import traceback
+        print(f"❌ ERROR in GET_MY_BOOKINGS: {e}")
+        traceback.print_exc()
+        return jsonify({"upcoming": [], "history": [], "error": "Could not fetch bookings due to an internal error."}), 200
 
 
 @bookings_bp.patch("/<int:booking_id>/cancel")

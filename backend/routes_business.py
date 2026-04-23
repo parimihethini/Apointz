@@ -25,93 +25,129 @@ business_bp = Blueprint("business", __name__, url_prefix="/api/business")
 
 
 def _require_business_owner() -> int | None:
-  claims = get_jwt()
-  role = claims.get("role")
-  if role not in (UserRole.BUSINESS, UserRole.ADMIN):
-      return None
-  return int(get_jwt_identity())
+    try:
+        claims = get_jwt()
+        role = claims.get("role")
+        if not role:
+            return None
+        role_str = str(role.value).lower() if hasattr(role, "value") else str(role).lower()
+        if role_str not in ("business", "admin"):
+            return None
+        identity = get_jwt_identity()
+        return int(identity) if identity else None
+    except Exception as e:
+        print(f"Error in _require_business_owner: {e}")
+        return None
 
 
 def _booking_card(b, slot, business):
-    user = b.user
+    user = getattr(b, "user", None)
     payment_info = None
-    if b.payment:
+    b_payment = getattr(b, "payment", None)
+    if b_payment:
         payment_info = {
-            "id": b.payment.id,
-            "amount": b.payment.amount,
-            "refund_amount": b.payment.refund_amount,
-            "status": b.payment.status,
-            "payment_method": b.payment.payment_method,
+            "id": getattr(b_payment, "id", None),
+            "amount": getattr(b_payment, "amount", 0.0),
+            "refund_amount": getattr(b_payment, "refund_amount", 0.0),
+            "status": str(getattr(b_payment, "status", "")),
+            "payment_method": getattr(b_payment, "payment_method", None),
         }
+    
+    b_status = getattr(b, "status", "pending")
+    b_status_str = b_status.value.lower() if hasattr(b_status, 'value') else str(b_status).lower()
+
     return {
-        "id": b.id,
-        "status": b.status,
-        "payment_status": b.payment_status,
+        "id": getattr(b, "id", None),
+        "status": b_status_str,
+        "payment_status": str(getattr(b, "payment_status", "")),
         "payment": payment_info,
-        "business_id": b.business_id,
-        "business_name": business.name,
-        "customer_id": b.user_id,
-        "customer_name": user.name if user else "Unknown",
-        "customer_phone": getattr(user, "phone", None) or "",
-        "customer_email": user.email if user else "",
-        "service": b.service_name or business.category or "",
-        "date": slot.date.isoformat(),
-        "start_time": slot.start_time.strftime("%H:%M"),
-        "end_time": slot.end_time.strftime("%H:%M"),
+        "business_id": getattr(business, "id", None) if business else None,
+        "business_name": getattr(business, "name", "Unknown Business") if business else "Unknown Business",
+        "customer_id": getattr(b, "user_id", None),
+        "customer_name": getattr(user, "name", "Unknown") if user else "Unknown",
+        "customer_phone": getattr(user, "phone", "") if user else "",
+        "customer_email": getattr(user, "email", "") if user else "",
+        "service": getattr(b, "service_name", None) or (getattr(business, "category", "") if business else ""),
+        "date": slot.date.isoformat() if slot and getattr(slot, "date", None) else "",
+        "start_time": slot.start_time.strftime("%H:%M") if slot and getattr(slot, "start_time", None) else "",
+        "end_time": slot.end_time.strftime("%H:%M") if slot and getattr(slot, "end_time", None) else "",
     }
 
 
 @business_bp.get("/dashboard")
 @jwt_required()
 def business_dashboard():
-    owner_id = _require_business_owner()
-    if not owner_id:
-        return jsonify({"message": "Business access required."}), 403
+    try:
+        owner_id = _require_business_owner()
+        if not owner_id:
+            return jsonify({"message": "Business access required."}), 403
 
-    today = date.today()
+        today = date.today()
 
-    businesses = Business.query.filter_by(owner_id=owner_id).all()
-    business_ids = [b.id for b in businesses]
+        businesses = Business.query.filter_by(owner_id=owner_id).all() or []
+        business_ids = [b.id for b in businesses if getattr(b, "id", None) is not None]
 
-    today_bookings = []
-    upcoming_bookings = []
-    stats = {"total_today": 0, "total_bookings": 0, "upcoming": 0, "pending": 0, "confirmed": 0, "completed": 0, "cancelled": 0}
+        today_bookings = []
+        upcoming_bookings = []
+        stats = {"total_today": 0, "total_bookings": 0, "upcoming": 0, "pending": 0, "confirmed": 0, "completed": 0, "cancelled": 0}
 
-    if business_ids:
-        all_bookings = (
-            Booking.query.join(AppointmentSlot, Booking.slot_id == AppointmentSlot.id)
-            .join(User, Booking.user_id == User.id)
-            .filter(Booking.business_id.in_(business_ids))
-            .order_by(AppointmentSlot.date.asc(), AppointmentSlot.start_time.asc())
-            .all()
+        if business_ids:
+            all_bookings = (
+                Booking.query.outerjoin(AppointmentSlot, Booking.slot_id == AppointmentSlot.id)
+                .outerjoin(User, Booking.user_id == User.id)
+                .filter(Booking.business_id.in_(business_ids))
+                .order_by(AppointmentSlot.date.asc(), AppointmentSlot.start_time.asc())
+                .all()
+            )
+
+            for b in all_bookings:
+                slot = getattr(b, "slot", None)
+                business = getattr(b, "business", None)
+                card = _booking_card(b, slot, business)
+
+                b_status = getattr(b, "status", "pending")
+                status_str = b_status.value.lower() if hasattr(b_status, 'value') else str(b_status).lower()
+
+                if status_str in stats:
+                    stats[status_str] += 1
+                stats["total_bookings"] += 1
+
+                if slot and getattr(slot, "date", None):
+                    if slot.date == today:
+                        today_bookings.append(card)
+                        stats["total_today"] += 1
+                    elif slot.date > today and status_str in ("pending", "confirmed"):
+                        upcoming_bookings.append(card)
+                        stats["upcoming"] += 1
+
+        business_summaries = [
+            {
+                "id": getattr(b, "id", None),
+                "name": getattr(b, "name", "Unknown"),
+                "city": getattr(b, "city", ""),
+                "category": getattr(b, "category", "")
+            }
+            for b in businesses
+        ]
+
+        return jsonify(
+            {
+                "businesses": business_summaries,
+                "today_bookings": today_bookings,
+                "upcoming_bookings": upcoming_bookings,
+                "stats": stats,
+            }
         )
-
-        for b in all_bookings:
-            slot = b.slot
-            business = b.business
-            card = _booking_card(b, slot, business)
-
-            if b.status in stats:
-                stats[b.status] += 1
-            stats["total_bookings"] += 1
-
-            if slot.date == today:
-                today_bookings.append(card)
-                stats["total_today"] += 1
-            elif slot.date > today and b.status in (BookingStatus.PENDING, BookingStatus.CONFIRMED):
-                upcoming_bookings.append(card)
-                stats["upcoming"] += 1
-
-    business_summaries = [{"id": b.id, "name": b.name, "city": b.city, "category": b.category} for b in businesses]
-
-    return jsonify(
-        {
-            "businesses": business_summaries,
-            "today_bookings": today_bookings,
-            "upcoming_bookings": upcoming_bookings,
-            "stats": stats,
-        }
-    )
+    except Exception as e:
+        print(f"[BUSINESS DASHBOARD ERROR] {e}")
+        traceback.print_exc()
+        return jsonify({
+            "businesses": [],
+            "today_bookings": [],
+            "upcoming_bookings": [],
+            "stats": {"total_today": 0, "total_bookings": 0, "upcoming": 0, "pending": 0, "confirmed": 0, "completed": 0, "cancelled": 0},
+            "error": "Failed to load dashboard due to an internal error."
+        }), 200
 
 
 @business_bp.get("/my-businesses")

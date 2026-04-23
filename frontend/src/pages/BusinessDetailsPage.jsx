@@ -21,7 +21,7 @@ const BusinessDetailsPage = () => {
       setLoading(true);
       try {
         const [{ data: prof }, { data: rev }] = await Promise.all([
-          api.get(`/businesses/${id}`),
+          api.get(`/business/${id}`),
           api.get(`/businesses/${id}/reviews`),
         ]);
         setBusiness(prof);

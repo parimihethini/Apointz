@@ -50,8 +50,8 @@ const DashboardPage = () => {
   const loadRescheduleSlots = async () => {
     if (!rescheduleTarget || !rescheduleDate) return;
     try {
-      const { data } = await api.get(`/businesses/${rescheduleTarget.business.id}/slots`, { 
-        params: { date: rescheduleDate } 
+      const { data } = await api.get(`/slots`, { 
+        params: { business_id: rescheduleTarget.business.id, date: rescheduleDate } 
       });
       setRescheduleSlots(data);
     } catch {
